@@ -97,6 +97,10 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_email TEXT NOT NULL,
                 number TEXT NOT NULL,
+                carrier TEXT,
+                line_type TEXT,
+                region TEXT,
+                business_name TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE(user_email, number)
             );
@@ -104,11 +108,25 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_email TEXT NOT NULL,
                 pattern TEXT NOT NULL,
+                area_code TEXT,
                 created_at TEXT NOT NULL,
                 UNIQUE(user_email, pattern)
             );
             """
         )
+        saved_number_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(saved_numbers)").fetchall()
+        }
+        for name in ("carrier", "line_type", "region", "business_name"):
+            if name not in saved_number_columns:
+                db.execute(f"ALTER TABLE saved_numbers ADD COLUMN {name} TEXT")
+        saved_pattern_columns = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(saved_patterns)").fetchall()
+        }
+        if "area_code" not in saved_pattern_columns:
+            db.execute("ALTER TABLE saved_patterns ADD COLUMN area_code TEXT")
         if db.execute(
             "SELECT 1 FROM users WHERE email = ?", ("ronald@example.com",)
         ).fetchone() is None:
@@ -134,9 +152,19 @@ class SaveNumberRequest(BaseModel):
     number: str = Field(min_length=1, max_length=40)
 
 
+class AutoSaveRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    number: str = Field(min_length=1, max_length=40)
+    carrier: str = Field(default="", max_length=120)
+    line_type: str = Field(default="", max_length=40)
+    region: str = Field(default="", max_length=120)
+    business_name: str = Field(default="", max_length=160)
+
+
 class SavePatternRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     pattern: str = Field(min_length=1, max_length=120)
+    area_code: str = Field(default="", max_length=8)
 
 
 class AdminUserRequest(BaseModel):
@@ -188,6 +216,11 @@ def carrier_metadata(number: str) -> dict[str, Any]:
     ]
     carrier = carriers[digest[0] % len(carriers)]
     region = regions[digest[1] % len(regions)]
+    digits = re.sub(r"\D", "", number)
+    if any(signature in digits for signature in ("555", "888", "999")):
+        carrier = ("Google Voice", "voip", "voip")
+    elif any(signature in digits for signature in ("40822", "40897")):
+        carrier = ("Civic Fiber", "fixed", "landline")
     return {
         "name": carrier[0],
         "type": carrier[1],
@@ -311,17 +344,26 @@ def dashboard_data(email: str) -> dict[str, Any]:
     require_pro(email)
     with connection() as db:
         numbers = [
-            row["number"]
+            {
+                "number": row["number"],
+                "carrier": row["carrier"] or "",
+                "line_type": row["line_type"] or "",
+                "region": row["region"] or "",
+                "business_name": row["business_name"] or "",
+            }
             for row in db.execute(
-                "SELECT number FROM saved_numbers WHERE user_email = ? "
+                """
+                SELECT number, carrier, line_type, region, business_name
+                FROM saved_numbers WHERE user_email = ?
+                """
                 "ORDER BY created_at DESC",
                 (email,),
             ).fetchall()
         ]
         patterns = [
-            row["pattern"]
+            {"pattern": row["pattern"], "area_code": row["area_code"] or ""}
             for row in db.execute(
-                "SELECT pattern FROM saved_patterns WHERE user_email = ? "
+                "SELECT pattern, area_code FROM saved_patterns WHERE user_email = ? "
                 "ORDER BY created_at DESC",
                 (email,),
             ).fetchall()
@@ -365,16 +407,60 @@ def pro_login(req: ProLoginRequest) -> dict[str, Any]:
 @app.post("/api/pro/save_number")
 def save_number(req: SaveNumberRequest) -> dict[str, Any]:
     require_pro(req.email)
+    record = lookup_record(req.number)
+    with connection() as db:
+        db.execute(
+            """
+            INSERT INTO saved_numbers (
+                user_email, number, carrier, line_type, region, business_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_email, number) DO UPDATE SET
+                carrier = excluded.carrier,
+                line_type = excluded.line_type,
+                region = excluded.region,
+                business_name = excluded.business_name
+            """,
+            (
+                req.email,
+                record["number"],
+                record["carrier"]["name"],
+                record["carrier"]["line_type"],
+                record["carrier"]["region"],
+                record["business"]["name"] or "",
+                utc_now(),
+            ),
+        )
+    return dashboard_data(req.email)
+
+
+@app.post("/pro/auto_save")
+@app.post("/api/pro/auto_save")
+def auto_save(req: AutoSaveRequest) -> dict[str, Any]:
+    require_pro(req.email)
     normalized = normalize_number(req.number)
     with connection() as db:
         db.execute(
             """
-            INSERT OR IGNORE INTO saved_numbers (user_email, number, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO saved_numbers (
+                user_email, number, carrier, line_type, region, business_name, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_email, number) DO UPDATE SET
+                carrier = excluded.carrier,
+                line_type = excluded.line_type,
+                region = excluded.region,
+                business_name = excluded.business_name
             """,
-            (req.email, normalized, utc_now()),
+            (
+                req.email,
+                normalized,
+                req.carrier.strip(),
+                req.line_type.strip(),
+                req.region.strip(),
+                req.business_name.strip(),
+                utc_now(),
+            ),
         )
-    return dashboard_data(req.email)
+    return {"status": "synchronized", **dashboard_data(req.email)}
 
 
 @app.post("/pro/save_pattern")
@@ -387,10 +473,11 @@ def save_pattern(req: SavePatternRequest) -> dict[str, Any]:
     with connection() as db:
         db.execute(
             """
-            INSERT OR IGNORE INTO saved_patterns (user_email, pattern, created_at)
-            VALUES (?, ?, ?)
+            INSERT INTO saved_patterns (user_email, pattern, area_code, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_email, pattern) DO UPDATE SET area_code = excluded.area_code
             """,
-            (req.email, pattern, utc_now()),
+            (req.email, pattern, req.area_code.strip(), utc_now()),
         )
     return dashboard_data(req.email)
 
@@ -568,6 +655,18 @@ INDEX_HTML = r"""<!doctype html>
     .stat span { color: var(--muted); font-size: 11px; }
     .saved-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 18px; }
     .pill { color: #c8d8eb; background: #152237; border: 1px solid var(--line); border-radius: 99px; padding: 7px 10px; font-size: 11px; }
+    .pill.yes { color: var(--cyan); background: rgba(108,227,218,.1); border-color: rgba(108,227,218,.24); }
+    .pill.no { color: var(--muted); background: rgba(148,163,184,.08); }
+    .saved-item { width: 100%; border: 1px solid var(--line); background: var(--panel-soft); border-radius: 12px; padding: 12px; }
+    .saved-item strong { display: block; font-size: 13px; color: var(--text); }
+    .saved-item span { color: var(--muted); font-size: 11px; }
+    .pattern-builder { margin: 22px 0 28px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(23, 34, 55, .48); }
+    .pattern-controls { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+    .pattern-controls label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
+    .pattern-results { display: grid; gap: 7px; margin-top: 12px; }
+    .pattern-option { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #0a111e; }
+    .pattern-option strong { color: var(--blue); font-size: 13px; }
+    .pattern-option button { padding: 6px 9px; font-size: 10px; }
     .empty { color: var(--muted); font-size: 12px; }
     .side-block { border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 18px; }
     .side-title { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
@@ -594,6 +693,7 @@ INDEX_HTML = r"""<!doctype html>
       .data-grid { grid-template-columns: 1fr; }
       .data-card.wide { grid-column: auto; }
       .result-head { align-items: flex-start; flex-direction: column; }
+      .pattern-controls { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -653,6 +753,26 @@ INDEX_HTML = r"""<!doctype html>
           <div id="pro-status" class="status" role="status"></div>
           <div id="pro-content" class="dashboard" style="display:none">
             <div class="eyebrow">Saved intelligence</div>
+            <div class="pattern-builder">
+              <h3>Four-digit pattern builder</h3>
+              <p class="hint">Choose an area code and enter the final four digits to generate quick scan targets.</p>
+              <div class="pattern-controls">
+                <label for="pattern-area-code">Area code
+                  <select id="pattern-area-code">
+                    <option value="408">408 · San Jose</option>
+                    <option value="415">415 · San Francisco</option>
+                    <option value="510">510 · Oakland</option>
+                    <option value="650">650 · Silicon Valley</option>
+                    <option value="714">714 · Orange County</option>
+                  </select>
+                </label>
+                <label for="pattern-suffix">Final four digits
+                  <input id="pattern-suffix" inputmode="numeric" maxlength="4" placeholder="0198">
+                </label>
+                <button id="pattern-generate-button" class="btn btn-primary">Generate</button>
+              </div>
+              <div id="pattern-results" class="pattern-results"></div>
+            </div>
             <div class="stats"><div class="stat"><strong id="saved-number-count">0</strong><span>saved numbers</span></div><div class="stat"><strong id="saved-pattern-count">0</strong><span>saved patterns</span></div></div>
             <div class="form-stack">
               <label for="save-number">Save a number</label><div class="lookup-bar"><input id="save-number" placeholder="+1 415 555 0198"><button id="save-number-button" class="btn btn-muted">Save</button></div>
@@ -702,6 +822,10 @@ INDEX_HTML = r"""<!doctype html>
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" })[c]);
     const jsonLabel = (value) => esc(JSON.stringify(value, null, 2));
+    const signalMarkup = (value) => Object.entries(value || {}).map(([key, enabled]) => {
+      const label = key.replaceAll("_", " ");
+      return "<span class='pill " + (enabled ? "yes" : "no") + "'>" + esc(label) + ": " + (enabled ? "Yes" : "No") + "</span>";
+    }).join("");
     function setStatus(id, message, error = false) {
       const element = $(id); element.textContent = message; element.classList.toggle("error", error);
     }
@@ -734,10 +858,27 @@ INDEX_HTML = r"""<!doctype html>
         $("spam-label").textContent = data.spam.label || "Unknown";
         $("biz-listed").textContent = data.business.listed ? "Listed" : "Not listed";
         $("biz-name").textContent = data.business.name || "No business match";
-        $("directories").innerHTML = "<code>" + jsonLabel(data.directories) + "</code>";
-        $("public-records").innerHTML = "<code>" + jsonLabel(data.public_records) + "</code>";
+        $("directories").innerHTML = signalMarkup(data.directories);
+        $("public-records").innerHTML = signalMarkup(data.public_records);
         $("session-last-lookup").textContent = data.number;
-        setStatus("lookup-status", "Scan complete · cached locally");
+        if (state.proEmail) {
+          try {
+            await request("/pro/auto_save", { method: "POST", body: JSON.stringify({
+              email: state.proEmail,
+              number: data.number,
+              carrier: data.carrier.name,
+              line_type: data.carrier.line_type,
+              region: data.carrier.region,
+              business_name: data.business.name || ""
+            }) });
+            await refreshDashboard();
+            setStatus("lookup-status", "Scan complete · saved to Pro history");
+          } catch (error) {
+            setStatus("lookup-status", "Scan complete · local cache updated");
+          }
+        } else {
+          setStatus("lookup-status", "Scan complete · cached locally");
+        }
       } catch (error) { setStatus("lookup-status", error.message, true); }
     }
     $("lookup-button").addEventListener("click", runLookup);
@@ -747,8 +888,8 @@ INDEX_HTML = r"""<!doctype html>
       $("pro-content").style.display = "block";
       $("saved-number-count").textContent = data.analytics.total_saved_numbers;
       $("saved-pattern-count").textContent = data.analytics.total_saved_patterns;
-      $("saved-numbers").innerHTML = data.saved_numbers.length ? data.saved_numbers.map((item) => "<span class='pill'>" + esc(item) + "</span>").join("") : "<span class='empty'>No numbers saved yet.</span>";
-      $("saved-patterns").innerHTML = data.saved_patterns.length ? data.saved_patterns.map((item) => "<span class='pill'>" + esc(item) + "</span>").join("") : "<span class='empty'>No patterns saved yet.</span>";
+      $("saved-numbers").innerHTML = data.saved_numbers.length ? data.saved_numbers.map((item) => "<div class='saved-item'><strong>" + esc(item.number) + "</strong><span>" + esc([item.carrier, item.line_type, item.region, item.business_name].filter(Boolean).join(" · ")) + "</span></div>").join("") : "<span class='empty'>No numbers saved yet.</span>";
+      $("saved-patterns").innerHTML = data.saved_patterns.length ? data.saved_patterns.map((item) => "<span class='pill'>" + esc(item.pattern) + (item.area_code ? " · " + esc(item.area_code) : "") + "</span>").join("") : "<span class='empty'>No patterns saved yet.</span>";
     }
     $("pro-login-button").addEventListener("click", async () => {
       try {
@@ -767,10 +908,40 @@ INDEX_HTML = r"""<!doctype html>
     });
     $("save-pattern-button").addEventListener("click", async () => {
       try {
-        await request("/pro/save_pattern", { method: "POST", body: JSON.stringify({ email: state.proEmail, pattern: $("save-pattern").value.trim() }) });
+        const pattern = $("save-pattern").value.trim();
+        const areaCode = pattern.match(/\b(\d{3})\b/)?.[1] || "";
+        await request("/pro/save_pattern", { method: "POST", body: JSON.stringify({ email: state.proEmail, pattern, area_code: areaCode }) });
         $("save-pattern").value = ""; setStatus("pro-status", "Pattern saved."); await refreshDashboard();
       } catch (error) { setStatus("pro-status", error.message, true); }
     });
+    async function generateSuffixCombinations() {
+      const suffix = $("pattern-suffix").value.trim();
+      const areaCode = $("pattern-area-code").value;
+      if (!/^\d{4}$/.test(suffix)) {
+        setStatus("pro-status", "Enter exactly four digits for the pattern builder.", true);
+        return;
+      }
+      const prefixes = ["201", "305", "441", "702", "883"];
+      $("pattern-results").innerHTML = prefixes.map((prefix) => {
+        const number = "+1 (" + areaCode + ") " + prefix + "-" + suffix;
+        return "<div class='pattern-option'><strong>" + number + "</strong><button class='btn btn-muted' data-number='" + number + "'>Scan</button></div>";
+      }).join("");
+      $("pattern-results").querySelectorAll("button").forEach((button) => button.addEventListener("click", () => {
+        $("lookup-number").value = button.dataset.number;
+        document.querySelector("[data-view='lookup']").click();
+        runLookup();
+      }));
+      try {
+        await request("/pro/save_pattern", { method: "POST", body: JSON.stringify({
+          email: state.proEmail,
+          pattern: areaCode + "-xxx-" + suffix,
+          area_code: areaCode
+        }) });
+        await refreshDashboard();
+        setStatus("pro-status", "Pattern generated and saved.");
+      } catch (error) { setStatus("pro-status", "Pattern generated."); }
+    }
+    $("pattern-generate-button").addEventListener("click", generateSuffixCombinations);
     $("admin-load-button").addEventListener("click", async () => {
       try {
         const data = await request("/admin/db?password=" + encodeURIComponent($("admin-password").value), { headers: {} });
