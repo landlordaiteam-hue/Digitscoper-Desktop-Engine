@@ -1,0 +1,82 @@
+const axios = require('axios');
+
+// Your active IPQualityScore Configuration
+const API_KEY = 'KJ9u8swvPlXSkNrGtdDkJLCOSupk46qV';
+const BASE_URL = 'https://ipqualityscore.com';
+
+/**
+ * Performs a comprehensive phone metadata validation check and
+ * prepares the payload data for the Pro and Admin interface tiers.
+ * @param {string} phoneNumber - The phone number string to validate.
+ */
+async function runDigitscoperLookup(phoneNumber) {
+  try {
+    // 1. Execute full request to the Phone Validation Endpoint
+    const targetUrl = `${BASE_URL}/${API_KEY}/${encodeURIComponent(phoneNumber)}`;
+    const response = await axios.get(targetUrl);
+    const data = response.data;
+
+    // Verify response status
+    if (!data.success) {
+      console.error(`[Lookup Error]: ${data.message || 'Unable to scan number.'}`);
+      return null;
+    }
+
+    // 2. Process and route the target fields directly into your UI segments
+    const uiPayload = {
+      // --- PRO USER UI SECTION ---
+      // Focused on high-level operational tracking details
+      proUI: {
+        phoneNumber: phoneNumber,
+        carrierName: data.carrier || 'Unknown Carrier',
+        lineClassification: data.line_type || 'Unknown Line Type', // e.g., Wireless, Landline, VOIP
+        isActive: data.active ? 'Active Line' : 'Inactive / Disconnected',
+        isBusiness: data.is_commercial ? 'Commercial Entity' : 'Personal Line',
+        businessName: data.is_commercial && data.name !== 'N/A' ? data.name : 'No Commercial Listing Found'
+      },
+
+      // --- ADMIN UI SECTION ---
+      // Focused on deep internal safety auditing, risk telemetry, and platform usage analytics
+      adminUI: {
+        fraudRiskScore: data.fraud_score || 0, // 0 - 100 risk score matrix
+        requestTokenId: data.request_id || 'N/A',
+        regionalRouting: {
+          country: data.country || 'US',
+          region: data.region || 'California',
+          city: data.city || 'San Jose',
+          zipCode: data.zip_code || 'N/A'
+        },
+        rawJsonTelemetry: data // Keeps complete underlying API print accessible for developers
+      }
+    };
+
+    // 3. Render directly into your respective interface displays
+    updateApplicationUI(uiPayload);
+    return uiPayload;
+
+  } catch (error) {
+    console.error('[Network Error]: Could not establish a connection to IPQS servers.', error.message);
+    return null;
+  }
+}
+
+/**
+ * Example handler showing how your layout handles the structured blocks
+ */
+function updateApplicationUI(payload) {
+  console.log('=== RENDERING PRO INTERFACE SECTION ===');
+  console.log(`Target Line: ${payload.proUI.phoneNumber}`);
+  console.log(`Carrier:     ${payload.proUI.carrierName}`);
+  console.log(`Line Type:   ${payload.proUI.lineClassification}`);
+  console.log(`Status:      ${payload.proUI.isActive}`);
+  console.log(`Profile:     ${payload.proUI.isBusiness}`);
+  console.log(`Entity Name: ${payload.proUI.businessName}`);
+  
+  console.log('\n=== RENDERING ADMIN METRICS SECTION ===');
+  console.log(`Fraud Assessment Score: [${payload.adminUI.fraudRiskScore}/100]`);
+  console.log(`Audit Reference ID:     ${payload.adminUI.requestTokenId}`);
+  console.log(`Geo-IP Tracking State:  ${payload.adminUI.regionalRouting.city}, ${payload.adminUI.regionalRouting.region}`);
+}
+
+// Example Execution Run:
+// runDigitscoperLookup('14085599314');
