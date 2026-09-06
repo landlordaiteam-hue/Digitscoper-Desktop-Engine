@@ -1238,7 +1238,13 @@ INDEX_HTML = r"""<!doctype html>
       $("pro-content").style.display = "block";
       $("saved-number-count").textContent = data.analytics.total_saved_numbers;
       $("saved-pattern-count").textContent = data.analytics.total_saved_patterns;
-      $("saved-numbers").innerHTML = data.saved_numbers.length ? data.saved_numbers.map((item) => "<div class='saved-item'><strong>" + esc(item.number) + "</strong><span>" + esc([item.carrier, item.line_type, item.region, item.business_name].filter(Boolean).join(" · ")) + "</span></div>").join("") : "<span class='empty'>No numbers saved yet.</span>";
+      $("saved-numbers").innerHTML = data.saved_numbers.length ? data.saved_numbers.map((item) => {
+        const number = esc(item.number);
+        const carrier = esc(item.carrier || "Unknown");
+        const business = esc(item.business_name || "None");
+        const deletePath = API_BASE + "/pro/delete_number/" + encodeURIComponent(state.proEmail) + "/" + encodeURIComponent(item.number);
+        return "<div class='data-card' style='display:flex; align-items:center; justify-content:space-between; gap:12px'><div style='text-align:left;'><strong style='font-family:monospace;'>" + number + "</strong><div style='font-size:11px; color:#64748b; margin-top:2px;'>" + carrier + " &middot; <span style='color:#34d399;'>" + business + "</span></div></div><button class='btn-danger' style='padding:4px 8px; font-size:11px;' onclick=\"if(confirm('Delete?')) fetch('" + deletePath + "', {method:'DELETE'}).then(() => refreshDashboard())\">Delete</button></div>";
+      }).join("") : "<span class='empty'>No numbers saved yet.</span>";
       $("saved-patterns").innerHTML = data.saved_patterns.length ? data.saved_patterns.map((item) => "<span class='pill'>" + esc(item.pattern) + (item.area_code ? " · " + esc(item.area_code) : "") + "</span>").join("") : "<span class='empty'>No patterns saved yet.</span>";
     }
     $("pro-login-button").addEventListener("click", async () => {
