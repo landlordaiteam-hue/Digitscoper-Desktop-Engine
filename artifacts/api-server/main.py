@@ -29,6 +29,9 @@ import re
 import sqlite3
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -45,6 +48,61 @@ APP_DIR = Path(__file__).resolve().parent
 DB_FILE = APP_DIR / "digitscoper.db"
 PORT = int(os.environ.get("PORT", "8000"))
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "admin123")
+IPQS_ENDPOINT = "https://ipqualityscore.com/api/json/phone"
+
+STATE_AREA_CODES: dict[str, dict[str, Any]] = {
+    "AL": {"name": "Alabama", "area_codes": ["205", "251", "256", "334", "938"]},
+    "AK": {"name": "Alaska", "area_codes": ["907"]},
+    "AZ": {"name": "Arizona", "area_codes": ["480", "520", "602", "623", "928"]},
+    "AR": {"name": "Arkansas", "area_codes": ["327", "479", "501", "870"]},
+    "CA": {"name": "California", "area_codes": ["209", "213", "279", "310", "323", "341", "350", "369", "408", "415", "424", "442", "510", "530", "559", "562", "619", "626", "628", "650", "657", "661", "669", "707", "714", "747", "760", "805", "818", "820", "831", "840", "858", "909", "916", "925", "935", "949", "951"]},
+    "CO": {"name": "Colorado", "area_codes": ["303", "719", "720", "970", "983"]},
+    "CT": {"name": "Connecticut", "area_codes": ["203", "475", "860", "959"]},
+    "DE": {"name": "Delaware", "area_codes": ["302"]},
+    "DC": {"name": "District of Columbia", "area_codes": ["202", "771"]},
+    "FL": {"name": "Florida", "area_codes": ["239", "305", "321", "352", "386", "407", "448", "561", "656", "689", "727", "754", "772", "786", "813", "850", "863", "904", "941", "954"]},
+    "GA": {"name": "Georgia", "area_codes": ["229", "404", "470", "478", "678", "706", "762", "770", "912", "943"]},
+    "HI": {"name": "Hawaii", "area_codes": ["808"]},
+    "ID": {"name": "Idaho", "area_codes": ["208", "986"]},
+    "IL": {"name": "Illinois", "area_codes": ["217", "224", "309", "312", "331", "447", "464", "618", "630", "708", "730", "773", "779", "815", "847", "872"]},
+    "IN": {"name": "Indiana", "area_codes": ["219", "260", "317", "463", "574", "765", "812", "930"]},
+    "IA": {"name": "Iowa", "area_codes": ["319", "515", "563", "641", "712"]},
+    "KS": {"name": "Kansas", "area_codes": ["316", "620", "785", "913"]},
+    "KY": {"name": "Kentucky", "area_codes": ["270", "364", "502", "606", "859"]},
+    "LA": {"name": "Louisiana", "area_codes": ["225", "318", "337", "457", "504", "985"]},
+    "ME": {"name": "Maine", "area_codes": ["207"]},
+    "MD": {"name": "Maryland", "area_codes": ["227", "240", "301", "410", "443", "667"]},
+    "MA": {"name": "Massachusetts", "area_codes": ["339", "351", "413", "508", "617", "774", "781", "857", "978"]},
+    "MI": {"name": "Michigan", "area_codes": ["231", "248", "269", "313", "517", "586", "616", "679", "734", "810", "906", "947", "989"]},
+    "MN": {"name": "Minnesota", "area_codes": ["218", "320", "507", "612", "651", "763", "924", "952"]},
+    "MS": {"name": "Mississippi", "area_codes": ["228", "471", "601", "662", "769"]},
+    "MO": {"name": "Missouri", "area_codes": ["314", "417", "557", "573", "636", "660", "816", "975"]},
+    "MT": {"name": "Montana", "area_codes": ["406"]},
+    "NE": {"name": "Nebraska", "area_codes": ["308", "402", "531"]},
+    "NV": {"name": "Nevada", "area_codes": ["702", "725", "775"]},
+    "NH": {"name": "New Hampshire", "area_codes": ["603"]},
+    "NJ": {"name": "New Jersey", "area_codes": ["201", "551", "609", "640", "732", "848", "856", "862", "908", "973", "977"]},
+    "NM": {"name": "New Mexico", "area_codes": ["505", "575"]},
+    "NY": {"name": "New York", "area_codes": ["212", "315", "329", "332", "347", "363", "516", "518", "585", "607", "624", "631", "646", "680", "716", "718", "838", "845", "914", "917", "929", "934"]},
+    "NC": {"name": "North Carolina", "area_codes": ["252", "336", "472", "704", "743", "828", "910", "919", "980", "984"]},
+    "ND": {"name": "North Dakota", "area_codes": ["701"]},
+    "OH": {"name": "Ohio", "area_codes": ["216", "220", "234", "283", "326", "330", "380", "419", "440", "513", "567", "614", "740", "937"]},
+    "OK": {"name": "Oklahoma", "area_codes": ["405", "539", "572", "580", "918"]},
+    "OR": {"name": "Oregon", "area_codes": ["458", "503", "541", "971"]},
+    "PA": {"name": "Pennsylvania", "area_codes": ["215", "223", "267", "272", "412", "445", "484", "570", "582", "610", "717", "724", "814", "835", "878"]},
+    "RI": {"name": "Rhode Island", "area_codes": ["401"]},
+    "SC": {"name": "South Carolina", "area_codes": ["803", "839", "843", "854", "864"]},
+    "SD": {"name": "South Dakota", "area_codes": ["605"]},
+    "TN": {"name": "Tennessee", "area_codes": ["423", "615", "629", "731", "865", "901", "931"]},
+    "TX": {"name": "Texas", "area_codes": ["210", "214", "254", "281", "325", "346", "361", "409", "430", "432", "469", "512", "682", "713", "726", "737", "806", "817", "830", "832", "835", "936", "940", "945", "956", "972", "979"]},
+    "UT": {"name": "Utah", "area_codes": ["385", "435", "801"]},
+    "VT": {"name": "Vermont", "area_codes": ["802"]},
+    "VA": {"name": "Virginia", "area_codes": ["276", "434", "540", "571", "703", "757", "804", "826", "948"]},
+    "WA": {"name": "Washington", "area_codes": ["206", "253", "360", "425", "509", "564"]},
+    "WV": {"name": "West Virginia", "area_codes": ["304", "681"]},
+    "WI": {"name": "Wisconsin", "area_codes": ["262", "274", "353", "414", "534", "608", "715", "920"]},
+    "WY": {"name": "Wyoming", "area_codes": ["307"]},
+}
 
 
 def utc_now() -> str:
@@ -200,7 +258,7 @@ def normalize_number(number: str) -> str:
 
 
 def carrier_metadata(number: str) -> dict[str, Any]:
-    """Return deterministic local metadata without requiring a paid lookup key."""
+    """Legacy local metadata retained only for old database records."""
     digest = hashlib.sha256(number.encode("utf-8")).digest()
     carriers = [
         ("Northstar Wireless", "mobile", "wireless"),
@@ -231,9 +289,128 @@ def carrier_metadata(number: str) -> dict[str, Any]:
     }
 
 
+def fetch_ipqs_record(number: str) -> dict[str, Any]:
+    """Fetch live phone intelligence from IPQualityScore without exposing the API key."""
+    api_key = os.environ.get("IPQUALITYSCORE_API_KEY", "").strip()
+    if not api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Live phone intelligence is not configured. Add IPQUALITYSCORE_API_KEY.",
+        )
+    endpoint = (
+        f"{IPQS_ENDPOINT}/{urllib.parse.quote(api_key, safe='')}/"
+        f"{urllib.parse.quote(number, safe='')}"
+    )
+    request = urllib.request.Request(
+        endpoint,
+        headers={"User-Agent": "Digitscoper/2.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Live phone intelligence request failed: {error}",
+        ) from error
+    if not payload.get("success"):
+        raise HTTPException(
+            status_code=502,
+            detail=payload.get("message") or "The live phone intelligence provider rejected the lookup.",
+        )
+    return payload
+
+
+def live_record(number: str, payload: dict[str, Any], now: str) -> dict[str, Any]:
+    """Normalize IPQS fields into the response shape used by the dashboard."""
+    fraud_score = int(payload.get("fraud_score") or 0)
+    active = payload.get("active")
+    active_status = payload.get("active_status") or (
+        "Active line" if active is True else "Inactive or disconnected" if active is False else "Unknown"
+    )
+    recent_abuse = bool(payload.get("recent_abuse"))
+    spammer = bool(payload.get("spammer") or payload.get("spam_number"))
+    if spammer or recent_abuse or fraud_score >= 90:
+        risk_label = "High risk"
+    elif fraud_score >= 75 or payload.get("risky"):
+        risk_label = "Suspicious"
+    else:
+        risk_label = "Lower risk"
+
+    carrier_name = payload.get("carrier") or "Unknown carrier"
+    line_type = payload.get("line_type") or "Unknown line type"
+    caller_name = payload.get("name")
+    if caller_name in (None, "", "N/A", "Unknown"):
+        caller_name = None
+    is_commercial = bool(payload.get("is_commercial"))
+    business_name = caller_name if is_commercial and caller_name else None
+    carrier = {
+        "name": carrier_name,
+        "type": line_type,
+        "line_type": line_type,
+        "region": payload.get("region") or "",
+        "timezone": payload.get("timezone") or "",
+        "source": "IPQualityScore Phone Validation API",
+        "active": active,
+        "active_status": active_status,
+    }
+    spam = {
+        "score": fraud_score,
+        "label": risk_label,
+        "reports": None,
+        "recent_abuse": recent_abuse,
+        "spammer": spammer,
+    }
+    business = {
+        "listed": bool(business_name),
+        "name": business_name,
+        "address": None,
+        "category": "Commercial entity" if is_commercial else None,
+        "website": None,
+        "hours": None,
+    }
+    directories = {
+        "caller_name": bool(caller_name),
+        "commercial_listing": is_commercial,
+    }
+    public_records = {
+        "provider_leaked": bool(payload.get("leaked")),
+        "reported_spammer": spammer,
+        "do_not_call": bool(payload.get("do_not_call")),
+    }
+    region = {
+        "city": payload.get("city"),
+        "state": payload.get("region"),
+        "country": payload.get("country"),
+        "zip_code": payload.get("zip_code"),
+        "timezone": payload.get("timezone"),
+    }
+    return {
+        "number": payload.get("formatted") or number,
+        "carrier": carrier,
+        "line_status": {
+            "active": active,
+            "label": active_status,
+        },
+        "spam": spam,
+        "business": business,
+        "directories": directories,
+        "public_records": public_records,
+        "region": region,
+        "provider": {
+            "name": "IPQualityScore",
+            "request_id": payload.get("request_id"),
+        },
+        "first_seen": now,
+        "last_seen": now,
+    }
+
+
 def lookup_record(number: str) -> dict[str, Any]:
     normalized = normalize_number(number)
     now = utc_now()
+    live = live_record(normalized, fetch_ipqs_record(normalized), now)
     with connection() as db:
         row = db.execute(
             "SELECT * FROM lookups WHERE number = ?", (normalized,)
@@ -242,62 +419,26 @@ def lookup_record(number: str) -> dict[str, Any]:
             lookup_count = row["lookup_count"] + 1
             db.execute(
                 """
-                UPDATE lookups SET last_seen = ?, lookup_count = ?
+                UPDATE lookups SET carrier = ?, spam = ?, business = ?,
+                    directories = ?, public_records = ?, region = ?,
+                    last_seen = ?, lookup_count = ?
                 WHERE number = ?
                 """,
-                (now, lookup_count, normalized),
+                (
+                    json.dumps(live["carrier"]),
+                    json.dumps(live["spam"]),
+                    json.dumps(live["business"]),
+                    json.dumps(live["directories"]),
+                    json.dumps(live["public_records"]),
+                    json.dumps(live["region"]),
+                    now,
+                    lookup_count,
+                    normalized,
+                ),
             )
-            return {
-                "number": row["number"],
-                "carrier": json.loads(row["carrier"]),
-                "spam": json.loads(row["spam"]),
-                "business": json.loads(row["business"]),
-                "directories": json.loads(row["directories"]),
-                "public_records": json.loads(row["public_records"]),
-                "region": json.loads(row["region"]),
-                "first_seen": row["first_seen"],
-                "last_seen": now,
-                "lookup_count": lookup_count,
-            }
+            live.update({"first_seen": row["first_seen"], "last_seen": now, "lookup_count": lookup_count})
+            return live
 
-        carrier = carrier_metadata(normalized)
-        digest = hashlib.sha256(normalized.encode("utf-8")).digest()
-        repeated_digits = len(set(normalized[-6:])) <= 2
-        score = 42 if repeated_digits else digest[2] % 26
-        spam = {
-            "score": score,
-            "label": (
-                "Elevated activity"
-                if score >= 35
-                else "Clear risk profile"
-            ),
-            "reports": digest[3] % 8,
-        }
-        business = {
-            "listed": digest[4] % 5 == 0,
-            "name": "Local business record" if digest[4] % 5 == 0 else None,
-            "address": None,
-            "category": "Professional services" if digest[4] % 5 == 0 else None,
-            "website": None,
-            "hours": None,
-        }
-        directories = {
-            "yelp": digest[5] % 4 == 0,
-            "yellowpages": digest[6] % 3 == 0,
-            "google_business": digest[7] % 5 == 0,
-            "bbb": digest[8] % 6 == 0,
-        }
-        public_records = {
-            "business_registration": business["listed"],
-            "property_records": digest[9] % 7 == 0,
-            "court_filings": digest[10] % 11 == 0,
-        }
-        region = {
-            "city": None,
-            "state": None,
-            "timezone": carrier["timezone"],
-            "population": None,
-        }
         db.execute(
             """
             INSERT INTO lookups (
@@ -307,28 +448,18 @@ def lookup_record(number: str) -> dict[str, Any]:
             """,
             (
                 normalized,
-                json.dumps(carrier),
-                json.dumps(spam),
-                json.dumps(business),
-                json.dumps(directories),
-                json.dumps(public_records),
-                json.dumps(region),
+                json.dumps(live["carrier"]),
+                json.dumps(live["spam"]),
+                json.dumps(live["business"]),
+                json.dumps(live["directories"]),
+                json.dumps(live["public_records"]),
+                json.dumps(live["region"]),
                 now,
                 now,
             ),
         )
-        return {
-            "number": normalized,
-            "carrier": carrier,
-            "spam": spam,
-            "business": business,
-            "directories": directories,
-            "public_records": public_records,
-            "region": region,
-            "first_seen": now,
-            "last_seen": now,
-            "lookup_count": 1,
-        }
+        live["lookup_count"] = 1
+        return live
 
 
 def require_pro(email: str) -> None:
@@ -390,28 +521,48 @@ def lookup(number: str) -> dict[str, Any]:
     return lookup_record(number)
 
 
+@app.get("/area-codes")
+@app.get("/api/area-codes")
+def area_codes() -> dict[str, Any]:
+    return {
+        "states": [
+            {"code": code, "name": value["name"], "area_codes": value["area_codes"]}
+            for code, value in sorted(STATE_AREA_CODES.items(), key=lambda item: item[1]["name"])
+        ]
+    }
+
+
 @app.get("/pattern_search/{area_code}/{suffix}")
 @app.get("/api/pattern_search/{area_code}/{suffix}")
 def pattern_search(area_code: str, suffix: str) -> dict[str, Any]:
-    """Find exact area-code and four-digit suffix matches in the local lookup ledger."""
-    if not re.fullmatch(r"\d{3}", area_code) or not re.fullmatch(r"\d{4}", suffix):
+    """Find exact suffix matches in the local ledger by area code or state."""
+    target = area_code.upper()
+    if not re.fullmatch(r"\d{3}", target) and target not in STATE_AREA_CODES:
         raise HTTPException(
             status_code=400,
-            detail="Area code must be 3 digits and suffix must be 4 digits.",
+            detail="Choose a valid 3-digit area code or two-letter state code.",
         )
+    if not re.fullmatch(r"\d{4}", suffix):
+        raise HTTPException(status_code=400, detail="Suffix must be exactly 4 digits.")
+    target_area_codes = (
+        [target]
+        if target.isdigit()
+        else STATE_AREA_CODES[target]["area_codes"]
+    )
 
     with connection() as db:
         rows = db.execute(
-            "SELECT number, carrier, business FROM lookups ORDER BY last_seen DESC"
+            "SELECT number, carrier, spam, business FROM lookups ORDER BY last_seen DESC"
         ).fetchall()
 
     matches: list[dict[str, Any]] = []
     for row in rows:
         digits = re.sub(r"\D", "", row["number"])
         national = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
-        if not national.startswith(area_code) or not national.endswith(suffix):
+        if not any(national.startswith(code) for code in target_area_codes) or not national.endswith(suffix):
             continue
         carrier = json.loads(row["carrier"])
+        spam = json.loads(row["spam"])
         business = json.loads(row["business"])
         matches.append(
             {
@@ -419,9 +570,20 @@ def pattern_search(area_code: str, suffix: str) -> dict[str, Any]:
                 "carrier": carrier.get("name", "Unknown"),
                 "line_type": carrier.get("line_type", "Unknown"),
                 "business": business.get("name") or "No business match",
+                "spam_score": spam.get("score"),
+                "spam_label": spam.get("label", "Unknown"),
+                "active": carrier.get("active"),
+                "active_status": carrier.get("active_status", "Unknown"),
             }
         )
-    return {"area_code": area_code, "suffix": suffix, "matches": matches}
+    return {
+        "scope": target,
+        "area_codes": target_area_codes,
+        "suffix": suffix,
+        "matches": matches,
+        "source": "Digitscoper local lookup ledger",
+        "note": "Live provider data is available after each exact-number lookup; phone intelligence APIs do not enumerate arbitrary phone ranges.",
+    }
 
 
 @app.post("/pro/login")
@@ -678,6 +840,8 @@ INDEX_HTML = r"""<!doctype html>
     .data-card.wide { grid-column: 1 / -1; }
     .data-label { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .12em; margin-bottom: 6px; }
     .data-value { font-weight: 700; font-size: 14px; overflow-wrap: anywhere; }
+    .signal-list { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 7px; min-width: 0; }
+    .signal-list .pill { display: inline-flex; max-width: 100%; white-space: normal; line-height: 1.35; }
     .data-value code { color: #bed0e5; font-size: 11px; font-weight: 500; white-space: pre-wrap; }
     .form-stack { max-width: 500px; display: grid; gap: 11px; margin-top: 24px; }
     .form-stack label { color: var(--muted); font-size: 11px; }
@@ -697,7 +861,7 @@ INDEX_HTML = r"""<!doctype html>
     .saved-item strong { display: block; font-size: 13px; color: var(--text); }
     .saved-item span { color: var(--muted); font-size: 11px; }
     .pattern-builder { margin: 22px 0 28px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(23, 34, 55, .48); }
-    .pattern-controls { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+    .pattern-controls { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; align-items: end; }
     .pattern-controls label { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
     .pattern-results { display: grid; gap: 7px; margin-top: 12px; }
     .pattern-option { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #0a111e; }
@@ -752,7 +916,7 @@ INDEX_HTML = r"""<!doctype html>
         <div id="view-lookup" class="view active">
           <div class="eyebrow">Unified phone lookup</div>
           <h1>See the signal<br>behind the number.</h1>
-          <p class="intro">Run a fast local scan across carrier, risk, business, directory, and public-record signals. Results are cached in your private SQLite engine for the next pass.</p>
+           <p class="intro">Run a live IPQualityScore scan across carrier, line status, business, risk, and reputation signals. Results are cached in your private SQLite engine for the next pass.</p>
           <div class="lookup-bar">
             <input id="lookup-number" type="text" inputmode="tel" placeholder="+1 (415) 555-0198" aria-label="Phone number">
             <button id="lookup-button" class="btn btn-primary">Run scan</button>
@@ -770,10 +934,11 @@ INDEX_HTML = r"""<!doctype html>
               <div class="data-card"><div class="data-label">Timezone</div><div id="carrier-tz" class="data-value">—</div></div>
               <div class="data-card"><div class="data-label">Risk score</div><div id="spam-score" class="data-value">—</div></div>
               <div class="data-card"><div class="data-label">Risk label</div><div id="spam-label" class="data-value">—</div></div>
+               <div class="data-card"><div class="data-label">Line status</div><div id="line-active" class="data-value">—</div></div>
               <div class="data-card"><div class="data-label">Business listing</div><div id="biz-listed" class="data-value">—</div></div>
               <div class="data-card"><div class="data-label">Business name</div><div id="biz-name" class="data-value">—</div></div>
-              <div class="data-card wide"><div class="data-label">Directory coverage</div><div id="directories" class="data-value"><code>—</code></div></div>
-              <div class="data-card wide"><div class="data-label">Public record signals</div><div id="public-records" class="data-value"><code>—</code></div></div>
+               <div class="data-card wide"><div class="data-label">Directory coverage</div><div id="directories" class="data-value signal-list"><code>—</code></div></div>
+               <div class="data-card wide"><div class="data-label">Public record signals</div><div id="public-records" class="data-value signal-list"><code>—</code></div></div>
             </div>
           </div>
         </div>
@@ -792,16 +957,13 @@ INDEX_HTML = r"""<!doctype html>
             <div class="dashboard-head"><div><h3>Private Pro session</h3><p class="hint">Lookups are saved automatically while signed in.</p></div><button id="pro-signout-button" class="btn btn-muted">Sign out</button></div>
             <div class="pattern-builder">
               <h3>Four-digit pattern builder</h3>
-              <p class="hint">Choose an area code and enter the final four digits to generate quick scan targets.</p>
+              <p class="hint">Choose a state to search every mapped area code, or narrow to one area code. Results come from numbers already checked in the local ledger; live provider data is collected when you run an exact-number lookup.</p>
               <div class="pattern-controls">
-                <label for="pattern-area-code">Area code
-                  <select id="pattern-area-code">
-                    <option value="408">408 · San Jose</option>
-                    <option value="415">415 · San Francisco</option>
-                    <option value="510">510 · Oakland</option>
-                    <option value="650">650 · Silicon Valley</option>
-                    <option value="714">714 · Orange County</option>
-                  </select>
+                <label for="pattern-state">State
+                  <select id="pattern-state"></select>
+                </label>
+                <label for="pattern-area-code">Area code scope
+                  <select id="pattern-area-code"><option value="ALL">All area codes</option></select>
                 </label>
                 <label for="pattern-suffix">Final four digits
                   <input id="pattern-suffix" inputmode="numeric" maxlength="4" placeholder="0198">
@@ -848,7 +1010,7 @@ INDEX_HTML = r"""<!doctype html>
           <div class="side-title"><h3>Quick start</h3></div>
           <div class="hint">Use <strong>Lookup</strong> to scan a number, <strong>Pro</strong> to save intelligence, and <strong>Admin</strong> to inspect the local ledger.</div>
         </div>
-        <div class="hint"><strong>Privacy by design.</strong><br>Lookup history stays in the local SQLite database created beside the app. No account or external lookup key is required.</div>
+         <div class="hint"><strong>Privacy by design.</strong><br>Live lookup responses are requested only when you scan a number, then stored in the local SQLite database created beside the app.</div>
       </aside>
     </main>
     <footer>Digitscoper Desktop Engine <span id="copyright-year"></span> · Secure local utility</footer>
@@ -872,6 +1034,23 @@ INDEX_HTML = r"""<!doctype html>
       if (!response.ok) throw new Error(body.detail || "Request failed");
       return body;
     }
+    let areaCodeCatalog = [];
+    function updateAreaCodeOptions() {
+      const selectedState = $("pattern-state").value;
+      const areaCodes = areaCodeCatalog.find((item) => item.code === selectedState)?.area_codes || [];
+      $("pattern-area-code").innerHTML = "<option value='ALL'>All area codes (" + areaCodes.length + ")</option>" +
+        areaCodes.map((code) => "<option value='" + esc(code) + "'>" + esc(code) + "</option>").join("");
+    }
+    async function loadAreaCodes() {
+      const data = await request("/area-codes");
+      areaCodeCatalog = data.states;
+      $("pattern-state").innerHTML = areaCodeCatalog.map((item) =>
+        "<option value='" + esc(item.code) + "'>" + esc(item.name) + "</option>"
+      ).join("");
+      $("pattern-state").value = "CA";
+      updateAreaCodeOptions();
+    }
+    $("pattern-state").addEventListener("change", updateAreaCodeOptions);
     document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => {
       document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
       document.querySelectorAll(".view").forEach((view) => view.classList.remove("active"));
@@ -880,7 +1059,7 @@ INDEX_HTML = r"""<!doctype html>
     async function runLookup() {
       const number = $("lookup-number").value.trim();
       if (!number) return setStatus("lookup-status", "Enter a number to scan.", true);
-      setStatus("lookup-status", "Scanning local signal index...");
+       setStatus("lookup-status", "Querying live IPQualityScore phone intelligence...");
       try {
         const data = await request("/lookup/" + encodeURIComponent(number));
         state.lastRecord = data;
@@ -893,6 +1072,7 @@ INDEX_HTML = r"""<!doctype html>
         $("carrier-tz").textContent = data.carrier.timezone || "Unknown";
         $("spam-score").textContent = data.spam.score + " / 100";
         $("spam-label").textContent = data.spam.label || "Unknown";
+        $("line-active").textContent = data.line_status?.label || data.carrier.active_status || "Unknown";
         $("biz-listed").textContent = data.business.listed ? "Listed" : "Not listed";
         $("biz-name").textContent = data.business.name || "No business match";
         $("directories").innerHTML = signalMarkup(data.directories);
@@ -964,16 +1144,19 @@ INDEX_HTML = r"""<!doctype html>
     async function generateSuffixCombinations() {
       const suffix = $("pattern-suffix").value.trim();
       const areaCode = $("pattern-area-code").value;
+      const stateCode = $("pattern-state").value;
+      const scope = areaCode === "ALL" ? stateCode : areaCode;
       if (!/^\d{4}$/.test(suffix)) {
         setStatus("pro-status", "Enter exactly four digits for the pattern builder.", true);
         return;
       }
-      const data = await request("/pattern_search/" + areaCode + "/" + suffix);
+      const data = await request("/pattern_search/" + scope + "/" + suffix);
       if (!data.matches.length) {
         $("pattern-results").innerHTML = "<div class='empty'>No matching numbers exist in the local lookup ledger yet.</div>";
       } else {
         $("pattern-results").innerHTML = data.matches.map((item) => {
-          const details = [item.carrier, item.line_type, item.business].filter(Boolean).join(" · ");
+          const active = item.active === true ? "Active" : item.active === false ? "Inactive" : item.active_status || "Unknown status";
+          const details = [item.carrier, item.line_type, item.business, "Risk " + (item.spam_score ?? "—"), active].filter(Boolean).join(" · ");
           return "<div class='pattern-option'><div><strong>" + esc(item.number) + "</strong><div class='hint'>" + esc(details) + "</div></div><button class='btn btn-muted' data-number='" + esc(item.number) + "'>Scan</button></div>";
         }).join("");
       }
@@ -985,8 +1168,8 @@ INDEX_HTML = r"""<!doctype html>
       try {
         await request("/pro/save_pattern", { method: "POST", body: JSON.stringify({
           email: state.proEmail,
-          pattern: areaCode + "-xxx-" + suffix,
-          area_code: areaCode
+          pattern: scope + "-xxx-" + suffix,
+          area_code: areaCode === "ALL" ? stateCode : areaCode
         }) });
         await refreshDashboard();
         setStatus("pro-status", data.matches.length ? "Ledger matches found and pattern saved." : "No ledger matches; pattern saved for later.");
@@ -1006,6 +1189,7 @@ INDEX_HTML = r"""<!doctype html>
         setStatus("admin-status", "Saved Pro user: " + data.email);
       } catch (error) { setStatus("admin-status", error.message, true); }
     });
+    loadAreaCodes().catch((error) => setStatus("pro-status", "Area-code catalog unavailable: " + error.message, true));
     $("copyright-year").textContent = new Date().getFullYear();
   </script>
 </body>

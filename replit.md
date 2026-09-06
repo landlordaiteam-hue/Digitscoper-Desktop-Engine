@@ -33,8 +33,10 @@ Digitscoper is a standalone FastAPI desktop utility for local phone signal looku
 ## Product
 
 - Unified phone lookup with carrier, line, region, risk, business, directory, and public-record signals
+- Live IPQualityScore phone validation for carrier, line type, active status, fraud score, caller/business name, and regional metadata
 - Pro login with automatic lookup history, saved number metadata, saved patterns, a four-digit pattern builder, and simple usage analytics
 - Pro pattern searches query the local lookup ledger for exact area-code and suffix matches instead of fabricating candidate numbers
+- State-wide pattern scopes cover the mapped U.S. state and District of Columbia area codes
 - Admin lookup ledger inspection and Pro user creation/update
 - Responsive dark dashboard with Lookup, Pro, Admin tabs and live session tracking
 
