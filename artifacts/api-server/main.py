@@ -232,6 +232,11 @@ class AdminUserRequest(BaseModel):
     is_pro: bool = True
 
 
+class BulkIngestionRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    numbers: str = Field(min_length=1, max_length=100000)
+
+
 app = FastAPI(
     title="Digitscoper Desktop Engine",
     description="Unified phone lookup, Pro saves, and local SQLite administration.",
@@ -255,6 +260,30 @@ def normalize_number(number: str) -> str:
             detail="Enter a valid phone number with 7 to 15 digits.",
         )
     return f"+{digits}"
+
+
+BULK_NUMBER_PATTERN = re.compile(r"^\s*\+?\d[\d\s().-]{5,23}\d\s*$")
+
+
+def parse_bulk_targets(raw_numbers: str) -> tuple[list[str], list[dict[str, str]]]:
+    accepted: list[str] = []
+    rejected: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for line_number, raw_entry in enumerate(re.split(r"[\r\n,;]+", raw_numbers), start=1):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        digits = re.sub(r"\D", "", entry)
+        if not BULK_NUMBER_PATTERN.fullmatch(entry) or not 7 <= len(digits) <= 15:
+            rejected.append({"line": str(line_number), "value": entry, "reason": "Invalid phone number format"})
+            continue
+        normalized = f"+{digits[2:] if digits.startswith('00') else digits}"
+        if normalized in seen:
+            rejected.append({"line": str(line_number), "value": entry, "reason": "Duplicate in batch"})
+            continue
+        seen.add(normalized)
+        accepted.append(normalized)
+    return accepted, rejected
 
 
 def carrier_metadata(number: str) -> dict[str, Any]:
@@ -718,6 +747,86 @@ def admin_db(password: str = Query(..., min_length=1)) -> dict[str, Any]:
     return {"total_numbers": len(numbers), "numbers": numbers}
 
 
+@app.post("/admin/bulk_seed")
+@app.post("/api/admin/bulk_seed")
+def admin_bulk_seed(req: BulkIngestionRequest) -> dict[str, Any]:
+    admin_check(req.password)
+    accepted, rejected = parse_bulk_targets(req.numbers)
+    now = utc_now()
+    seeded: list[str] = []
+    already_indexed: list[str] = []
+    pending_carrier = {
+        "name": "Pending live verification",
+        "type": "unknown",
+        "line_type": "Unknown",
+        "region": "",
+        "timezone": "",
+        "source": "Bulk target ingestion · format validated",
+        "active": None,
+        "active_status": "Not live-verified",
+    }
+    pending_spam = {
+        "score": None,
+        "label": "Not live-verified",
+        "reports": None,
+        "recent_abuse": None,
+        "spammer": None,
+    }
+    pending_business = {
+        "listed": False,
+        "name": None,
+        "address": None,
+        "category": None,
+        "website": None,
+        "hours": None,
+    }
+    pending_directories = {"caller_name": False, "commercial_listing": False}
+    pending_public_records = {
+        "provider_leaked": False,
+        "reported_spammer": False,
+        "do_not_call": False,
+    }
+    with connection() as db:
+        for number in accepted:
+            existing = db.execute(
+                "SELECT number FROM lookups WHERE number = ?", (number,)
+            ).fetchone()
+            if existing:
+                already_indexed.append(number)
+                continue
+            db.execute(
+                """
+                INSERT INTO lookups (
+                    number, carrier, spam, business, directories, public_records,
+                    region, first_seen, last_seen, lookup_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (
+                    number,
+                    json.dumps(pending_carrier),
+                    json.dumps(pending_spam),
+                    json.dumps(pending_business),
+                    json.dumps(pending_directories),
+                    json.dumps(pending_public_records),
+                    json.dumps({}),
+                    now,
+                    now,
+                ),
+            )
+            seeded.append(number)
+    return {
+        "status": "bulk_ingestion_complete",
+        "submitted": len([entry for entry in re.split(r"[\r\n,;]+", req.numbers) if entry.strip()]),
+        "seeded_count": len(seeded),
+        "seeded": seeded,
+        "already_indexed_count": len(already_indexed),
+        "already_indexed": already_indexed,
+        "rejected_count": len(rejected),
+        "rejected": rejected,
+        "note": "Seeded records are format-validated and remain pending live verification until an exact-number scan is run.",
+    }
+
+
 @app.post("/admin/add_user")
 @app.post("/api/admin/add_user")
 def admin_add_user(req: AdminUserRequest) -> dict[str, Any]:
@@ -879,6 +988,19 @@ INDEX_HTML = r"""<!doctype html>
     .admin-output { margin-top: 20px; max-height: 280px; overflow: auto; }
     .db-row { display: flex; justify-content: space-between; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
     .db-row span:last-child { color: var(--muted); }
+    .bulk-ingestion { margin-top: 26px; border: 1px solid var(--line); border-radius: 14px; background: rgba(23, 34, 55, .48); overflow: hidden; }
+    .bulk-ingestion summary { cursor: pointer; padding: 16px; color: var(--text); font-size: 13px; font-weight: 750; }
+    .bulk-ingestion summary::marker { color: var(--blue); }
+    .bulk-ingestion-body { display: grid; gap: 11px; padding: 0 16px 16px; }
+    .bulk-ingestion-body label { color: var(--muted); font-size: 11px; }
+    .bulk-ingestion-body textarea { width: 100%; min-height: 150px; resize: vertical; color: var(--text); background: #0a111e; border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; outline: none; font: inherit; line-height: 1.5; }
+    .bulk-ingestion-body textarea:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(93,184,255,.12); }
+    .ingestion-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .ingestion-card { border: 1px solid var(--line); background: var(--panel-soft); border-radius: 10px; padding: 11px; }
+    .ingestion-card strong { display: block; font-size: 20px; letter-spacing: -.03em; }
+    .ingestion-card span { color: var(--muted); font-size: 10px; }
+    .ingestion-list { max-height: 150px; overflow: auto; display: grid; gap: 6px; }
+    .ingestion-list div { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
     footer { padding: 16px; color: #56667c; text-align: center; font-size: 10px; letter-spacing: .08em; }
     @media (max-width: 820px) {
       .topbar { align-items: flex-start; flex-wrap: wrap; }
@@ -894,6 +1016,7 @@ INDEX_HTML = r"""<!doctype html>
       .data-card.wide { grid-column: auto; }
       .result-head { align-items: flex-start; flex-direction: column; }
       .pattern-controls { grid-template-columns: 1fr; }
+      .ingestion-summary { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -991,6 +1114,16 @@ INDEX_HTML = r"""<!doctype html>
           </div>
           <div id="admin-status" class="status" role="status"></div>
           <div id="admin-output" class="admin-output"></div>
+           <details class="bulk-ingestion">
+             <summary>Bulk Target Ingestion Node</summary>
+             <div class="bulk-ingestion-body">
+               <p class="hint">Paste one raw target number per line. Format validation seeds the local ledger without spending live lookup credits; exact scans can enrich each seeded record later.</p>
+               <label for="bulk-targets">Raw target batch</label>
+               <textarea id="bulk-targets" placeholder="+1 (415) 555-0198&#10;408-559-9314&#10;..."></textarea>
+               <button id="bulk-ingestion-button" class="btn btn-muted">Process target batch</button>
+               <div id="bulk-ingestion-results"></div>
+             </div>
+           </details>
           <div class="form-stack">
             <h3>Create or update Pro user</h3>
             <label for="admin-email">User email</label><input id="admin-email" type="email" placeholder="new-user@example.com">
@@ -1187,6 +1320,29 @@ INDEX_HTML = r"""<!doctype html>
       try {
         const data = await request("/admin/add_user", { method: "POST", body: JSON.stringify({ password: $("admin-password").value, email: $("admin-email").value.trim(), user_password: $("admin-user-password").value, is_pro: true }) });
         setStatus("admin-status", "Saved Pro user: " + data.email);
+      } catch (error) { setStatus("admin-status", error.message, true); }
+    });
+    $("bulk-ingestion-button").addEventListener("click", async () => {
+      const numbers = $("bulk-targets").value.trim();
+      if (!numbers) return setStatus("admin-status", "Paste at least one target number to process.", true);
+      try {
+        const data = await request("/admin/bulk_seed", { method: "POST", body: JSON.stringify({
+          password: $("admin-password").value,
+          numbers
+        }) });
+        const rejected = data.rejected.length
+          ? "<div class='ingestion-list'>" + data.rejected.map((item) => "<div>Line " + esc(item.line) + " · " + esc(item.value) + " · " + esc(item.reason) + "</div>").join("") + "</div>"
+          : "<div class='hint'>No rejected entries.</div>";
+        $("bulk-ingestion-results").innerHTML =
+          "<div class='ingestion-summary'>" +
+          "<div class='ingestion-card'><strong>" + data.seeded_count + "</strong><span>seeded targets</span></div>" +
+          "<div class='ingestion-card'><strong>" + data.already_indexed_count + "</strong><span>already indexed</span></div>" +
+          "<div class='ingestion-card'><strong>" + data.rejected_count + "</strong><span>rejected entries</span></div>" +
+          "</div><div class='hint' style='margin-top:10px'>" + esc(data.note) + "</div>" +
+          "<div style='margin-top:10px'><h3>Validation output</h3>" + rejected + "</div>";
+        setStatus("admin-status", "Processed " + data.submitted + " batch entries.");
+        const refreshed = await request("/admin/db?password=" + encodeURIComponent($("admin-password").value), { headers: {} });
+        $("admin-output").innerHTML = refreshed.numbers.length ? refreshed.numbers.map((item) => "<div class='db-row'><span>" + esc(item.number) + "</span><span>" + item.lookup_count + " scans</span></div>").join("") : "<div class='empty'>No lookup records yet.</div>";
       } catch (error) { setStatus("admin-status", error.message, true); }
     });
     loadAreaCodes().catch((error) => setStatus("pro-status", "Area-code catalog unavailable: " + error.message, true));
