@@ -33,7 +33,7 @@ Digitscoper is a standalone FastAPI desktop utility for local phone signal looku
 ## Product
 
 - Unified phone lookup with carrier, line, region, risk, business, directory, and public-record signals
-- Pro login with saved numbers, saved patterns, and simple usage analytics
+- Pro login with automatic lookup history, saved number metadata, saved patterns, a four-digit pattern builder, and simple usage analytics
 - Admin lookup ledger inspection and Pro user creation/update
 - Responsive dark dashboard with Lookup, Pro, Admin tabs and live session tracking
 
@@ -45,6 +45,7 @@ Digitscoper is a standalone FastAPI desktop utility for local phone signal looku
 
 - The default seeded credentials are for local development only: `ronald@example.com` / `password123` and admin password `admin123`.
 - `pywebview` should be started with `--desktop`; the managed preview runs headlessly with Uvicorn.
+- Existing SQLite databases are upgraded in place when new Pro metadata columns are introduced.
 
 ## Pointers
 
