@@ -1,44 +1,50 @@
-# [Project name]
+# Digitscoper Desktop Engine
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Digitscoper is a standalone FastAPI desktop utility for local phone signal lookups, Pro watchlists, and SQLite administration.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the embedded FastAPI dashboard (port 8080 in the managed preview)
+- `pnpm --filter @workspace/api-server run desktop` — open the dashboard in a native pywebview window
+- `pnpm --filter @workspace/api-server run package:desktop` — create a one-file PyInstaller executable in `dist/`
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- The app creates `artifacts/api-server/digitscoper.db` automatically.
+- Set `ADMIN_PASSWORD` before sharing the app to replace the development admin password.
 
 ## Stack
 
-- pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Python 3.13, FastAPI, Uvicorn, bcrypt, SQLite, pywebview, and PyInstaller
+- The application is intentionally kept as a single-file monolith at `artifacts/api-server/main.py`.
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/main.py` — database schema, FastAPI routes, native launcher, and embedded HTML/CSS/JavaScript UI
+- `artifacts/api-server/.replit-artifact/artifact.toml` — managed preview and production service configuration
+- `pyproject.toml` — Python runtime dependencies installed for the project
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- SQLite stays next to the executable so the desktop build remains portable and persists lookup history locally.
+- User passwords are stored only as bcrypt hashes; Pro access is checked server-side on every save/dashboard request.
+- Phone metadata is a deterministic local signal index so the app works without an external API key or network dependency.
+- The same FastAPI app serves both the managed `/api` preview prefix and the root URL used by the desktop window.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Unified phone lookup with carrier, line, region, risk, business, directory, and public-record signals
+- Pro login with saved numbers, saved patterns, and simple usage analytics
+- Admin lookup ledger inspection and Pro user creation/update
+- Responsive dark dashboard with Lookup, Pro, Admin tabs and live session tracking
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Keep the application as a single-file monolith; do not split the Python app into modules.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The default seeded credentials are for local development only: `ronald@example.com` / `password123` and admin password `admin123`.
+- `pywebview` should be started with `--desktop`; the managed preview runs headlessly with Uvicorn.
 
 ## Pointers
 
