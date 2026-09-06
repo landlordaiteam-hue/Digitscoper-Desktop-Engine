@@ -390,6 +390,40 @@ def lookup(number: str) -> dict[str, Any]:
     return lookup_record(number)
 
 
+@app.get("/pattern_search/{area_code}/{suffix}")
+@app.get("/api/pattern_search/{area_code}/{suffix}")
+def pattern_search(area_code: str, suffix: str) -> dict[str, Any]:
+    """Find exact area-code and four-digit suffix matches in the local lookup ledger."""
+    if not re.fullmatch(r"\d{3}", area_code) or not re.fullmatch(r"\d{4}", suffix):
+        raise HTTPException(
+            status_code=400,
+            detail="Area code must be 3 digits and suffix must be 4 digits.",
+        )
+
+    with connection() as db:
+        rows = db.execute(
+            "SELECT number, carrier, business FROM lookups ORDER BY last_seen DESC"
+        ).fetchall()
+
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        digits = re.sub(r"\D", "", row["number"])
+        national = digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+        if not national.startswith(area_code) or not national.endswith(suffix):
+            continue
+        carrier = json.loads(row["carrier"])
+        business = json.loads(row["business"])
+        matches.append(
+            {
+                "number": row["number"],
+                "carrier": carrier.get("name", "Unknown"),
+                "line_type": carrier.get("line_type", "Unknown"),
+                "business": business.get("name") or "No business match",
+            }
+        )
+    return {"area_code": area_code, "suffix": suffix, "matches": matches}
+
+
 @app.post("/pro/login")
 @app.post("/api/pro/login")
 def pro_login(req: ProLoginRequest) -> dict[str, Any]:
@@ -649,6 +683,8 @@ INDEX_HTML = r"""<!doctype html>
     .form-stack label { color: var(--muted); font-size: 11px; }
     .form-stack .btn { justify-self: start; }
     .dashboard { margin-top: 28px; }
+    .dashboard-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .dashboard-head .btn { padding: 8px 11px; font-size: 11px; }
     .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin: 16px 0; }
     .stat { border: 1px solid var(--line); background: var(--panel-soft); border-radius: 12px; padding: 14px; }
     .stat strong { display: block; font-size: 27px; letter-spacing: -.05em; }
@@ -753,6 +789,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="pro-status" class="status" role="status"></div>
           <div id="pro-content" class="dashboard" style="display:none">
             <div class="eyebrow">Saved intelligence</div>
+            <div class="dashboard-head"><div><h3>Private Pro session</h3><p class="hint">Lookups are saved automatically while signed in.</p></div><button id="pro-signout-button" class="btn btn-muted">Sign out</button></div>
             <div class="pattern-builder">
               <h3>Four-digit pattern builder</h3>
               <p class="hint">Choose an area code and enter the final four digits to generate quick scan targets.</p>
@@ -895,10 +932,20 @@ INDEX_HTML = r"""<!doctype html>
       try {
         const data = await request("/pro/login", { method: "POST", body: JSON.stringify({ email: $("pro-email").value.trim(), password: $("pro-password").value }) });
         if (!data.pro) throw new Error("This account does not have Pro access.");
-        state.proEmail = data.email; $("session-pro-user").textContent = data.email;
+        state.proEmail = data.email;
+        $("session-pro-user").textContent = data.email;
+        $("pro-login-form").style.display = "none";
         setStatus("pro-status", "Pro workspace unlocked.");
         await refreshDashboard();
       } catch (error) { setStatus("pro-status", error.message, true); }
+    });
+    $("pro-signout-button").addEventListener("click", () => {
+      state.proEmail = null;
+      $("session-pro-user").textContent = "Not signed in";
+      $("pro-login-form").style.display = "grid";
+      $("pro-content").style.display = "none";
+      $("pattern-results").innerHTML = "";
+      setStatus("pro-status", "Signed out of the Pro workspace.");
     });
     $("save-number-button").addEventListener("click", async () => {
       try {
@@ -921,11 +968,15 @@ INDEX_HTML = r"""<!doctype html>
         setStatus("pro-status", "Enter exactly four digits for the pattern builder.", true);
         return;
       }
-      const prefixes = ["201", "305", "441", "702", "883"];
-      $("pattern-results").innerHTML = prefixes.map((prefix) => {
-        const number = "+1 (" + areaCode + ") " + prefix + "-" + suffix;
-        return "<div class='pattern-option'><strong>" + number + "</strong><button class='btn btn-muted' data-number='" + number + "'>Scan</button></div>";
-      }).join("");
+      const data = await request("/pattern_search/" + areaCode + "/" + suffix);
+      if (!data.matches.length) {
+        $("pattern-results").innerHTML = "<div class='empty'>No matching numbers exist in the local lookup ledger yet.</div>";
+      } else {
+        $("pattern-results").innerHTML = data.matches.map((item) => {
+          const details = [item.carrier, item.line_type, item.business].filter(Boolean).join(" · ");
+          return "<div class='pattern-option'><div><strong>" + esc(item.number) + "</strong><div class='hint'>" + esc(details) + "</div></div><button class='btn btn-muted' data-number='" + esc(item.number) + "'>Scan</button></div>";
+        }).join("");
+      }
       $("pattern-results").querySelectorAll("button").forEach((button) => button.addEventListener("click", () => {
         $("lookup-number").value = button.dataset.number;
         document.querySelector("[data-view='lookup']").click();
@@ -938,8 +989,8 @@ INDEX_HTML = r"""<!doctype html>
           area_code: areaCode
         }) });
         await refreshDashboard();
-        setStatus("pro-status", "Pattern generated and saved.");
-      } catch (error) { setStatus("pro-status", "Pattern generated."); }
+        setStatus("pro-status", data.matches.length ? "Ledger matches found and pattern saved." : "No ledger matches; pattern saved for later.");
+      } catch (error) { setStatus("pro-status", error.message, true); }
     }
     $("pattern-generate-button").addEventListener("click", generateSuffixCombinations);
     $("admin-load-button").addEventListener("click", async () => {
