@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Digitscoper"
+description = "A browser-facing shell for the Digitscoper local intelligence dashboard, connecting the root preview to its FastAPI service under /api."
+version = "1.0.0"
+id = "artifacts/digitscoper-web"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 21705
+
+[services.development]
+run = "pnpm --filter @workspace/digitscoper-web run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/digitscoper-web", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/digitscoper-web/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "21705"
+BASE_PATH = "/"
